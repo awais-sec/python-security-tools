@@ -1,101 +1,74 @@
-import threading
-import tkinter as tk
-from tkinter import filedialog, messagebox
-
 from scapy.all import sniff, wrpcap
+import tkinter as tk
+from tkinter import messagebox, filedialog
+import threading
 
 
-captured_packets = []
-sniffing = False
+packet_filter = ""
 sniffing_thread = None
+stop_sniffing_flag = False
+captured_packets = []
 
 
 def handle_packet(packet):
-    """Display and store a captured packet."""
-    captured_packets.append(packet)
-    log_text.after(0, add_packet_to_log, packet.summary())
-
-
-def add_packet_to_log(summary):
-    """Add a packet summary to the GUI log."""
-    log_text.insert(tk.END, summary + "\n")
+    """Display a captured packet and keep it for saving."""
+    packet_summary = packet.summary()
+    log_text.insert(tk.END, f"{packet_summary}\n")
     log_text.see(tk.END)
-
-
-def get_filter():
-    """Return the Scapy filter selected by the user."""
-    filters = {
-        "All": "",
-        "TCP": "tcp",
-        "UDP": "udp",
-        "ICMP": "icmp",
-    }
-    return filters[filter_var.get()]
+    captured_packets.append(packet)
 
 
 def start_sniffing():
-    """Start packet capture in a background thread."""
-    global sniffing, sniffing_thread
+    """Start packet capture using the selected filter and packet limit."""
+    global sniffing_thread, packet_filter, stop_sniffing_flag
 
-    if sniffing:
-        return
-
+    stop_sniffing_flag = False
     captured_packets.clear()
-    log_text.insert(tk.END, "Starting packet capture...\n")
+
+    filter_type = filter_var.get()
+
+    if filter_type == "TCP":
+        packet_filter = "tcp"
+    elif filter_type == "UDP":
+        packet_filter = "udp"
+    elif filter_type == "ICMP":
+        packet_filter = "icmp"
+    else:
+        packet_filter = ""
+
+    limit = limit_entry.get()
+    limit = int(limit) if limit.isdigit() else 0
+
+    log_text.insert(tk.END, "Starting network packet sniffing...\n")
     log_text.see(tk.END)
 
-    packet_limit = limit_entry.get().strip()
-    count = int(packet_limit) if packet_limit.isdigit() else 0
-
-    sniffing = True
     sniffing_thread = threading.Thread(
-        target=run_sniffer,
-        args=(get_filter(), count),
-        daemon=True,
+        target=lambda: sniff(
+            prn=handle_packet,
+            store=0,
+            filter=packet_filter,
+            count=limit,
+            stop_filter=lambda packet: stop_sniffing_flag,
+        )
     )
     sniffing_thread.start()
 
 
-def run_sniffer(packet_filter, count):
-    """Run Scapy's packet capture outside the GUI thread."""
-    global sniffing
-
-    try:
-        sniff(
-            prn=handle_packet,
-            store=False,
-            filter=packet_filter,
-            count=count,
-            stop_filter=lambda packet: not sniffing,
-        )
-    except Exception as error:
-        log_text.after(0, show_sniff_error, str(error))
-    finally:
-        sniffing = False
-        log_text.after(0, capture_finished)
-
-
-def show_sniff_error(error):
-    """Display a packet capture error."""
-    messagebox.showerror("Capture Error", error)
-
-
-def capture_finished():
-    """Update the log when packet capture finishes."""
-    log_text.insert(tk.END, "Packet capture stopped.\n")
-    log_text.see(tk.END)
-
-
 def stop_sniffing():
     """Request that the current packet capture stop."""
-    global sniffing
-    sniffing = False
-    log_text.insert(tk.END, "Stopping packet capture...\n")
+    global stop_sniffing_flag
+
+    stop_sniffing_flag = True
+
+    if sniffing_thread and sniffing_thread.is_alive():
+        sniffing_thread.join(timeout=1)
+
+    log_text.insert(tk.END, "Packet sniffing stopped.\n")
     log_text.see(tk.END)
 
 
-def save_packets():
-    """Save captured packets as a PCAP file and a text summary."""
+def save_to_pcap_and_text():
+    """Save captured packets to a PCAP file and text summaries."""
     if not captured_packets:
         messagebox.showwarning("No Packets", "No packets have been captured yet.")
         return
@@ -110,45 +83,51 @@ def save_packets():
 
     try:
         wrpcap(filename, captured_packets)
+        messagebox.showinfo("Success", f"Packets saved to {filename}.")
+    except OSError as error:
+        messagebox.showerror("Error", f"Failed to save PCAP file: {error}")
+        return
 
-        text_filename = filename.rsplit(".", 1)[0] + ".txt"
+    text_filename = filename.rsplit(".", 1)[0] + ".txt"
+
+    try:
         with open(text_filename, "w") as text_file:
             for packet in captured_packets:
-                text_file.write(packet.summary() + "\n")
+                text_file.write(f"{packet.summary()}\n")
 
         messagebox.showinfo(
-            "Saved",
-            f"Packets saved to:\n{filename}\n\nSummaries saved to:\n{text_filename}",
+            "Success",
+            f"Packet summaries saved to {text_filename}.",
         )
     except OSError as error:
-        messagebox.showerror("Save Error", str(error))
+        messagebox.showerror(
+            "Error",
+            f"Failed to save packet summaries: {error}",
+        )
 
 
 def clear_log():
-    """Clear the packet log and captured packet list."""
+    """Clear the packet log and captured packets."""
+    log_text.delete(1.0, tk.END)
     captured_packets.clear()
-    log_text.delete("1.0", tk.END)
     log_text.insert(tk.END, "Packet log cleared.\n")
+    log_text.see(tk.END)
 
 
 root = tk.Tk()
-root.title("Packet Sniffer")
-root.geometry("750x500")
+root.title("Enhanced Packet Sniffer")
 
-filter_frame = tk.LabelFrame(root, text="Packet Filter", padx=10, pady=10)
+filter_frame = tk.LabelFrame(root, text="Filter Options", padx=10, pady=10)
 filter_frame.pack(padx=10, pady=10, fill="x")
 
 filter_var = tk.StringVar(value="All")
-for name in ("All", "TCP", "UDP", "ICMP"):
-    tk.Radiobutton(
-        filter_frame,
-        text=f"{name} Packets" if name != "All" else "All Packets",
-        variable=filter_var,
-        value=name,
-    ).pack(anchor="w")
+tk.Radiobutton(filter_frame, text="All Packets", variable=filter_var, value="All").pack(anchor="w")
+tk.Radiobutton(filter_frame, text="TCP Packets", variable=filter_var, value="TCP").pack(anchor="w")
+tk.Radiobutton(filter_frame, text="UDP Packets", variable=filter_var, value="UDP").pack(anchor="w")
+tk.Radiobutton(filter_frame, text="ICMP Packets", variable=filter_var, value="ICMP").pack(anchor="w")
 
 limit_frame = tk.LabelFrame(root, text="Packet Limit", padx=10, pady=10)
-limit_frame.pack(padx=10, pady=5, fill="x")
+limit_frame.pack(padx=10, pady=10, fill="x")
 
 limit_entry = tk.Entry(limit_frame)
 limit_entry.pack(fill="x")
@@ -165,7 +144,7 @@ button_frame.pack(fill="x")
 
 tk.Button(button_frame, text="Start Sniffing", command=start_sniffing).pack(side="left", padx=5)
 tk.Button(button_frame, text="Stop Sniffing", command=stop_sniffing).pack(side="left", padx=5)
-tk.Button(button_frame, text="Save to PCAP", command=save_packets).pack(side="left", padx=5)
+tk.Button(button_frame, text="Save to PCAP and Text", command=save_to_pcap_and_text).pack(side="left", padx=5)
 tk.Button(button_frame, text="Clear Log", command=clear_log).pack(side="left", padx=5)
 
 root.mainloop()
